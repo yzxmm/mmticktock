@@ -41,8 +41,11 @@ class DraggableLabel(QLabel):
         self.update_scaled_pixmap()
     
     def resizeEvent(self, event):
-        self.update_scaled_pixmap()
-        super().resizeEvent(event)
+        try:
+            self.update_scaled_pixmap()
+            super().resizeEvent(event)
+        except Exception as e:
+            print(f"Error in DraggableLabel.resizeEvent: {e}")
         
     def update_scaled_pixmap(self):
         try:
@@ -131,21 +134,37 @@ class DraggableLabel(QLabel):
             
 class AssetLoader:
     def __init__(self, asset_dir="assets"):
-        self.asset_dir = self.resource_path(asset_dir)
         self.digits = {}
         self.colon = None
         self.bg = None
+        self.icon = None  # Ensure icon attribute exists
+        
+        # Resolve asset_dir
+        self.asset_dir = self.resource_path(asset_dir)
+        print(f"Loading assets from: {self.asset_dir}")
+        
         try:
             self.load_assets()
         except Exception as e:
-            print(f"Resource loading skipped: {e}")
+            print(f"Resource loading error: {e}")
 
     def resource_path(self, relative_path):
+        """ Get absolute path to resource, works for dev and for PyInstaller """
+        # 优先查找外部资源（允许用户自定义）
+        if getattr(sys, 'frozen', False):
+            # 打包后，优先看 EXE 旁边有没有
+            application_path = os.path.dirname(sys.executable)
+            external_path = os.path.join(application_path, relative_path)
+            if os.path.exists(external_path):
+                return external_path
+            
+        # 如果外部没有，或者是开发环境，使用默认逻辑
         try:
+            # PyInstaller creates a temp folder and stores path in _MEIPASS
             base_path = sys._MEIPASS
         except Exception:
-            # use the directory of the script file instead of current working directory
             base_path = os.path.dirname(os.path.abspath(__file__))
+
         return os.path.join(base_path, relative_path)
 
     def load_assets(self):
@@ -197,6 +216,8 @@ class CountdownWindow(QMainWindow):
         
         self.old_pos = None
         self.setMouseTracking(True) # Important for cursor update on window
+        self.resize_margin = 10 # Width of resize area
+        self.resize_direction = None # None, 'right', 'bottom', 'bottom_right'
 
     def load_config(self):
         if os.path.exists(CONFIG_FILE):
@@ -249,8 +270,8 @@ class CountdownWindow(QMainWindow):
         self.digits_container.setGeometry((w - cont_w)//2, (h - cont_h)//2, cont_w, cont_h)
         
         # Add padding inside container to avoid edge overlap issues
-        padding_x = 50 # Increased padding to make container easier to grab (Blue Box bigger)
-        padding_y = 25
+        padding_x = 80 # Significantly increased padding (Blue Box bigger)
+        padding_y = 35
         available_w = max(10, cont_w - 2 * padding_x)
         available_h = max(10, cont_h - 2 * padding_y)
         
@@ -285,7 +306,14 @@ class CountdownWindow(QMainWindow):
 
     def init_ui(self):
         self.setWindowTitle("mmticktock")
-        flags = Qt.FramelessWindowHint | Qt.Tool
+        if self.loader.icon:
+            self.setWindowIcon(self.loader.icon)
+            
+        # 设置窗口标志
+        # FramelessWindowHint: 无边框
+        # WindowStaysOnTopHint: 置顶（初始状态由配置决定）
+        # Tool: 不在任务栏显示 (已移除，以便在任务栏显示图标)
+        flags = Qt.FramelessWindowHint
         if self.config.get("top_most", False):
             flags |= Qt.WindowStaysOnTopHint
         self.setWindowFlags(flags)
@@ -293,6 +321,17 @@ class CountdownWindow(QMainWindow):
         
         self.central_widget = QWidget()
         self.setCentralWidget(self.central_widget)
+        
+        # Add App Icon to the UI (Top-Left)
+        if self.loader.icon:
+            self.icon_label = QLabel(self.central_widget)
+            pixmap = self.loader.icon.pixmap(32, 32)
+            self.icon_label.setPixmap(pixmap)
+            self.icon_label.setGeometry(10, 10, 32, 32)
+            self.icon_label.show()
+            # Optional: Make it draggable or just decorative
+            self.icon_label.setAttribute(Qt.WA_TransparentForMouseEvents) # Let clicks pass through if needed
+            self.icon_label.raise_() # Ensure icon is on top of everything
         
         w, h = self.config["window_size"]
         self.resize(w, h)
@@ -359,6 +398,12 @@ class CountdownWindow(QMainWindow):
             self.digit_labels[2].setPixmap(self.loader.colon)
         else:
             self.digit_labels[2].setText(":")
+
+        # Force reset layout if it looks like the old tight layout
+        # The new padding_x is 80. If the first digit is closer than 60, it's the old layout.
+        if self.digit_labels[0].x() < 60:
+            print("Detected old layout, forcing reset...")
+            self.reset_layout()
             
         self.update_display()
 
@@ -464,35 +509,116 @@ class CountdownWindow(QMainWindow):
     def mousePressEvent(self, event):
         if event.button() == Qt.LeftButton:
             if self.is_editing:
-                # Check for Window Resize (Bottom Right)
-                if event.pos() in QRect(self.width()-20, self.height()-20, 20, 20):
+                # Check for Window Resize (Right, Bottom, Bottom-Right)
+                rect = self.rect()
+                x = event.pos().x()
+                y = event.pos().y()
+                w = rect.width()
+                h = rect.height()
+                m = self.resize_margin
+                
+                direction = None
+                
+                # Check corners first
+                if x >= w - m and y >= h - m:
+                    direction = 'bottom_right'
+                # Then edges
+                elif x >= w - m:
+                    direction = 'right'
+                elif y >= h - m:
+                    direction = 'bottom'
+                
+                if direction:
                     self.window_resizing = True
+                    self.resize_direction = direction
                     self.window_resize_start_pos = event.globalPos()
                     self.window_initial_size = self.size()
+                    
+                    # Prepare for global scaling
+                    self.handle_container_resize_start() # Snapshot children of container
+                    self.initial_container_geo = self.digits_container.geometry() # Snapshot container itself
                     return
             
             # Default Move behavior (Available in both modes now)
             self.old_pos = event.globalPos()
 
     def mouseMoveEvent(self, event):
-        if self.is_editing:
-            # Update cursor for Window Resize
-            if event.pos() in QRect(self.width()-20, self.height()-20, 20, 20):
-                self.setCursor(Qt.SizeFDiagCursor)
-            else:
-                self.setCursor(Qt.ArrowCursor)
+        try:
+            if self.is_editing:
+                # Update cursor for Window Resize
+                rect = self.rect()
+                x = event.pos().x()
+                y = event.pos().y()
+                w = rect.width()
+                h = rect.height()
+                m = self.resize_margin
                 
-            if self.window_resizing:
-                delta = event.globalPos() - self.window_resize_start_pos
-                new_w = max(100, self.window_initial_size.width() + delta.x())
-                new_h = max(50, self.window_initial_size.height() + delta.y())
-                self.resize(new_w, new_h)
-                return
+                if x >= w - m and y >= h - m:
+                    self.setCursor(Qt.SizeFDiagCursor)
+                elif x >= w - m:
+                    self.setCursor(Qt.SizeHorCursor)
+                elif y >= h - m:
+                    self.setCursor(Qt.SizeVerCursor)
+                else:
+                    self.setCursor(Qt.ArrowCursor)
+                    
+                if self.window_resizing:
+                    delta = event.globalPos() - self.window_resize_start_pos
+                    
+                    # Aspect Ratio Check (Only for corner resize)
+                    keep_aspect_ratio = (QApplication.keyboardModifiers() & Qt.ShiftModifier)
 
-        if self.old_pos:
-            delta = event.globalPos() - self.old_pos
-            self.move(self.pos() + delta)
-            self.old_pos = event.globalPos()
+                    initial_w = self.window_initial_size.width()
+                    initial_h = self.window_initial_size.height()
+                    
+                    if initial_w <= 0 or initial_h <= 0:
+                        return
+
+                    new_w = initial_w
+                    new_h = initial_h
+                    
+                    if self.resize_direction == 'bottom_right':
+                        new_w = max(100, initial_w + delta.x())
+                        new_h = max(50, initial_h + delta.y())
+                        
+                        if keep_aspect_ratio:
+                            ratio = initial_w / initial_h
+                            if abs(delta.x()) > abs(delta.y()):
+                                 new_h = int(new_w / ratio)
+                            else:
+                                 new_w = int(new_h * ratio)
+                                 
+                    elif self.resize_direction == 'right':
+                        new_w = max(100, initial_w + delta.x())
+                        
+                    elif self.resize_direction == 'bottom':
+                        new_h = max(50, initial_h + delta.y())
+
+                    self.resize(new_w, new_h)
+                    
+                    # Global Scaling of Contents
+                    scale_x = new_w / initial_w
+                    scale_y = new_h / initial_h
+                    
+                    # Update Container Geometry
+                    if hasattr(self, 'initial_container_geo'):
+                        ig = self.initial_container_geo
+                        self.digits_container.setGeometry(
+                            int(ig.x() * scale_x),
+                            int(ig.y() * scale_y),
+                            int(ig.width() * scale_x),
+                            int(ig.height() * scale_y)
+                        )
+                        # Trigger children resize
+                        self.handle_container_resize()
+                    return
+
+            if self.old_pos:
+                delta = event.globalPos() - self.old_pos
+                self.move(self.pos() + delta)
+                self.old_pos = event.globalPos()
+        except Exception as e:
+            print(f"Error in mouseMoveEvent: {e}")
 
     def mouseReleaseEvent(self, event):
         self.old_pos = None
@@ -528,9 +654,10 @@ class CountdownWindow(QMainWindow):
             menu.addAction(top_action)
             
             # 3. Reset Layout (Not Checkable -> Needs Icon for alignment)
-            reset_action = QAction(transparent_icon, "↺   重置布局", self)
-            reset_action.triggered.connect(self.reset_layout)
-            menu.addAction(reset_action)
+            if self.is_editing:
+                reset_action = QAction(transparent_icon, "↺   重置布局 (修复间距)", self)
+                reset_action.triggered.connect(self.reset_layout)
+                menu.addAction(reset_action)
             
             menu.addSeparator()
             
@@ -539,8 +666,11 @@ class CountdownWindow(QMainWindow):
             tz_menu.setIcon(transparent_icon)
             
             common_timezones = [
-                'Asia/Shanghai', 'Asia/Tokyo', 'America/New_York', 
-                'Europe/London', 'Australia/Sydney', 'UTC'
+                'Asia/Shanghai', 'Asia/Tokyo', 'Asia/Hong_Kong',
+                'America/New_York', 'America/Los_Angeles', 'America/Chicago',
+                'Europe/London', 'Europe/Paris', 'Europe/Berlin', 'Europe/Moscow',
+                'Australia/Sydney', 'Pacific/Auckland', 
+                'Asia/Dubai', 'UTC'
             ]
             
             for tz_name in common_timezones:
