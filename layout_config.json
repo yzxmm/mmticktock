@@ -1,9 +1,1 @@
-{
-    "window_size": [
-        500,
-        200
-    ],
-    "target_date": "2026-01-01 00:00:00",
-    "top_most": false,
-    "timezone": "Asia/Shanghai"
-}
+{"window_size": [600, 240], "target_date": "2026-01-01 00:00:00", "top_most": false, "timezone": "Asia/Shanghai"}

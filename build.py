@@ -32,7 +32,7 @@ def generate_config():
     print("Checking configuration...")
     config_path = "layout_config.json"
     default_config = {
-        "window_size": [500, 200],
+        "window_size": [600, 240],
         "target_date": "2026-01-01 00:00:00",
         "top_most": False,
         "timezone": "Asia/Shanghai"
@@ -79,12 +79,25 @@ def copy_files():
     dist_dir = 'dist'
     
     # Copy config
-    if os.path.exists("layout_config.json"):
-        shutil.copy("layout_config.json", dist_dir)
+    config_path = "layout_config.json"
+    if os.path.exists(config_path):
+        shutil.copy(config_path, dist_dir)
+    else:
+        # Ensure dist has a default config even if none exists in project root
+        default_config = {
+            "window_size": [600, 240],
+            "target_date": "2026-01-01 00:00:00",
+            "top_most": False,
+            "timezone": "Asia/Shanghai"
+        }
+        with open(os.path.join(dist_dir, "layout_config.json"), "w", encoding="utf-8") as f:
+            json.dump(default_config, f, indent=4)
     
     # Copy assets
     dest_assets = os.path.join(dist_dir, "assets")
     if os.path.exists("assets"):
+        if os.path.exists(dest_assets):
+            shutil.rmtree(dest_assets)
         shutil.copytree("assets", dest_assets)
         
     # Copy tutorial
